@@ -1,0 +1,43 @@
+# Dockerfile for Cloud Armor Edge Security Demo Environment
+# This creates a containerized environment with all necessary tools
+
+FROM google/cloud-sdk:alpine
+
+# Install additional tools
+RUN apk add --no-cache \
+    bash \
+    curl \
+    wget \
+    jq \
+    vim \
+    git
+
+# Install Terraform
+RUN wget -O terraform.zip https://releases.hashicorp.com/terraform/1.6.0/terraform_1.6.0_linux_amd64.zip && \
+    unzip terraform.zip && \
+    mv terraform /usr/local/bin/ && \
+    rm terraform.zip
+
+# Set working directory
+WORKDIR /workspace
+
+# Copy scripts and configurations
+COPY setup.sh /usr/local/bin/setup.sh
+COPY test_edge_policy.sh /usr/local/bin/test_edge_policy.sh
+COPY cleanup.sh /usr/local/bin/cleanup.sh
+
+# Make scripts executable
+RUN chmod +x /usr/local/bin/*.sh
+
+# Create helpful aliases
+RUN echo 'alias ll="ls -la"' >> /root/.bashrc && \
+    echo 'alias k="kubectl"' >> /root/.bashrc && \
+    echo 'alias tf="terraform"' >> /root/.bashrc
+
+# Set default command
+CMD ["/bin/bash"]
+
+# Labels
+LABEL maintainer="your-email@example.com"
+LABEL description="Cloud Armor Edge Security Demo Environment"
+LABEL version="1.0"

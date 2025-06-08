@@ -1,0 +1,175 @@
+# Terraform configuration for Cloud Armor Edge Security Demo
+# This creates the infrastructure for the edge cache security demonstration
+
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 4.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.1"
+    }
+  }
+}
+
+# Variables
+variable "project_id" {
+  description = "The GCP project ID"
+  type        = string
+}
+
+variable "region" {
+  description = "The GCP region"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "bucket_location" {
+  description = "Location for the Cloud Storage bucket"
+  type        = string
+  default     = "US"
+}
+
+# Provider configuration
+provider "google" {
+  project = var.project_id
+  region  = var.region
+}
+
+# Random suffix for unique resource names
+resource "random_id" "suffix" {
+  byte_length = 4
+}
+
+# Cloud Storage bucket for content origin
+resource "google_storage_bucket" "content_bucket" {
+  name          = "${var.project_id}-edge-cache-demo-${random_id.suffix.hex}"
+  location      = var.bucket_location
+  force_destroy = true
+
+  uniform_bucket_level_access = false
+
+  website {
+    main_page_suffix = "index.html"
+  }
+
+  cors {
+    origin          = ["*"]
+    method          = ["GET", "HEAD"]
+    response_header = ["*"]
+    max_age_seconds = 3600
+  }
+}
+
+# Make bucket publicly readable
+resource "google_storage_bucket_iam_member" "public_read" {
+  bucket = google_storage_bucket.content_bucket.name
+  role   = "roles/storage.objectViewer"
+  member = "allUsers"
+}
+
+# Upload test image to bucket
+resource "google_storage_bucket_object" "test_image" {
+  name   = "google.png"
+  bucket = google_storage_bucket.content_bucket.name
+  source = "../assets/google.png" # You'll need to download this separately
+
+  depends_on = [google_storage_bucket_iam_member.public_read]
+}
+
+# Backend bucket for load balancer
+resource "google_compute_backend_bucket" "content_backend" {
+  name        = "lb-backend-bucket-${random_id.suffix.hex}"
+  description = "Backend bucket for edge cache demo"
+  bucket_name = google_storage_bucket.content_bucket.name
+  enable_cdn  = true
+}
+
+# URL map for load balancer
+resource "google_compute_url_map" "content_lb" {
+  name            = "edge-cache-lb-${random_id.suffix.hex}"
+  description     = "Load balancer for edge cache demo"
+  default_service = google_compute_backend_bucket.content_backend.id
+}
+
+# HTTP target proxy
+resource "google_compute_target_http_proxy" "content_proxy" {
+  name    = "edge-cache-lb-proxy-${random_id.suffix.hex}"
+  url_map = google_compute_url_map.content_lb.id
+}
+
+# Global forwarding rule (creates the load balancer IP)
+resource "google_compute_global_forwarding_rule" "content_lb" {
+  name       = "edge-cache-lb-rule-${random_id.suffix.hex}"
+  target     = google_compute_target_http_proxy.content_proxy.id
+  port_range = "80"
+  ip_protocol = "TCP"
+}
+
+# Cloud Armor security policy
+resource "google_compute_security_policy" "edge_policy" {
+  name        = "edge-security-policy-${random_id.suffix.hex}"
+  description = "Edge security policy for CDN content"
+  type        = "CLOUD_ARMOR_EDGE"
+
+  # Default rule - deny all
+  rule {
+    action   = "deny(403)"
+    priority = 2147483647
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["*"]
+      }
+    }
+    description = "Default deny rule"
+  }
+
+  # Allow rule for specific IPs (modify as needed)
+  rule {
+    action   = "allow"
+    priority = 1000
+    match {
+      versioned_expr = "SRC_IPS_V1"
+      config {
+        src_ip_ranges = ["0.0.0.0/0"] # Change this to restrict access
+      }
+    }
+    description = "Allow from anywhere (modify as needed)"
+  }
+}
+
+# Attach security policy to backend bucket
+resource "google_compute_backend_bucket_security_policy" "policy_attachment" {
+  backend_bucket   = google_compute_backend_bucket.content_backend.name
+  security_policy  = google_compute_security_policy.edge_policy.name
+}
+
+# Outputs
+output "load_balancer_ip" {
+  description = "IP address of the load balancer"
+  value       = google_compute_global_forwarding_rule.content_lb.ip_address
+}
+
+output "bucket_name" {
+  description = "Name of the created storage bucket"
+  value       = google_storage_bucket.content_bucket.name
+}
+
+output "test_url" {
+  description = "URL to test the setup"
+  value       = "http://${google_compute_global_forwarding_rule.content_lb.ip_address}/google.png"
+}
+
+output "backend_bucket_name" {
+  description = "Name of the backend bucket"
+  value       = google_compute_backend_bucket.content_backend.name
+}
+
+output "security_policy_name" {
+  description = "Name of the Cloud Armor security policy"
+  value       = google_compute_security_policy.edge_policy.name
+}
